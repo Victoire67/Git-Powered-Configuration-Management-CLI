@@ -29,3 +29,20 @@ def test_invalid_repo_error_stores_details_and_message() -> None:
 def test_invalid_repo_error_can_be_caught_as_base_error() -> None:
     with pytest.raises(GitConfigError, match="not a Git repository"):
         raise InvalidRepoError(Path("configs"), "not a Git repository")
+
+
+def test_config_not_found_without_branch() -> None:
+    error = ConfigNotFound("app.json")
+
+    assert error.name == "app.json"
+    assert error.branch is None
+    assert str(error) == "Configuration 'app.json' not found"
+
+
+def test_config_not_found_with_branch() -> None:
+    error = ConfigNotFound("app.json", branch="draft/new-port")
+
+    assert error.branch == "draft/new-port"
+    assert str(error) == (
+        "Configuration 'app.json' not found on branch 'draft/new-port'"
+    )
