@@ -1,4 +1,5 @@
 import pytest
+from pathlib import Path
 
 from gitconfig_cli.exceptions import (
     ConfigNotFound,
@@ -15,3 +16,16 @@ from gitconfig_cli.exceptions import (
 )
 def test_all_errors_inherit_from_base(error_class: type[Exception]) -> None:
     assert issubclass(error_class, GitConfigError)
+
+
+def test_invalid_repo_error_stores_details_and_message() -> None:
+    error = InvalidRepoError(Path("configs"), "not a Git repository")
+
+    assert error.path == Path("configs")
+    assert error.reason == "not a Git repository"
+    assert str(error) == "Invalid repository at 'configs': not a Git repository"
+
+
+def test_invalid_repo_error_can_be_caught_as_base_error() -> None:
+    with pytest.raises(GitConfigError, match="not a Git repository"):
+        raise InvalidRepoError(Path("configs"), "not a Git repository")
