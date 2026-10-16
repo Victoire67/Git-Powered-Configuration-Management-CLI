@@ -6,6 +6,8 @@ CLI) can catch any tool-specific error with a single ``except`` clause.
 
 from pathlib import Path
 
+from collections.abc import Sequence
+
 
 class GitConfigError(Exception):
     """Base class for all gitconfig-cli errors."""
@@ -40,3 +42,23 @@ class ConfigNotFound(GitConfigError):
         self.branch = branch
         location = f" on branch '{branch}'" if branch else ""
         super().__init__(f"Configuration '{name}' not found{location}")
+
+
+class MergeConflictError(GitConfigError):
+    """Raised when merging a draft branch produces conflicts."""
+
+    def __init__(
+        self, source: str, target: str, conflicted_files: Sequence[str]
+    ) -> None:
+        """Initialize the error.
+
+        Args:
+            source: Branch being merged (the draft).
+            target: Branch being merged into (usually ``main``).
+            conflicted_files: Files that contain conflicts.
+        """
+        self.source = source
+        self.target = target
+        self.conflicted_files = list(conflicted_files)
+        files = ", ".join(self.conflicted_files)
+        super().__init__(f"Merge conflict merging '{source}' into '{target}': {files}")
