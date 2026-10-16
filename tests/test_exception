@@ -1,0 +1,17 @@
+import pytest
+
+from gitconfig_cli.exceptions import (
+    ConfigNotFound,
+    GitConfigError,
+    GitOperationError,
+    InvalidRepoError,
+    MergeConflictError,
+)
+
+
+@pytest.mark.parametrize(
+    "error_class",
+    [InvalidRepoError, ConfigNotFound, MergeConflictError, GitOperationError],
+)
+def test_all_errors_inherit_from_base(error_class: type[Exception]) -> None:
+    assert issubclass(error_class, GitConfigError)
