@@ -62,3 +62,18 @@ class MergeConflictError(GitConfigError):
         self.conflicted_files = list(conflicted_files)
         files = ", ".join(self.conflicted_files)
         super().__init__(f"Merge conflict merging '{source}' into '{target}': {files}")
+
+
+class GitOperationError(GitConfigError):
+    """Raised when an underlying Git command fails unexpectedly."""
+
+    def __init__(self, operation: str, details: str) -> None:
+        """Initialize the error.
+
+        Args:
+            operation: The Git operation that failed (e.g. ``"push"``).
+            details: Error output from Git.
+        """
+        self.operation = operation
+        self.details = details
+        super().__init__(f"Git '{operation}' failed: {details}")
