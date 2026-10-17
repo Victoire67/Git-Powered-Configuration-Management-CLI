@@ -72,3 +72,20 @@ def test_merge_conflict_error_accepts_a_tuple() -> None:
     error = MergeConflictError("draft/new-port", "main", ("app.json",))
 
     assert error.conflicted_files == ["app.json"]
+
+
+def test_git_operation_error_stores_details_and_message() -> None:
+    error = GitOperationError("push", "remote rejected")
+
+    assert error.operation == "push"
+    assert error.details == "remote rejected"
+    assert str(error) == "Git 'push' failed: remote rejected"
+
+
+def test_git_operation_error_keeps_the_original_cause() -> None:
+    original = RuntimeError("network unreachable")
+
+    with pytest.raises(GitOperationError) as exc_info:
+        raise GitOperationError("push", str(original)) from original
+
+    assert exc_info.value.__cause__ is original
