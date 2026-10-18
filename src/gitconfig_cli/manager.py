@@ -31,6 +31,7 @@ from gitconfig_cli.abstractions import (
     MergePreference,
     VersionControl,
 )
+from gitconfig_cli.conflicts import ConflictResolver, has_conflict_markers
 from gitconfig_cli.exceptions import (
     ConfigAlreadyExists,
     ConfigFormatError,
@@ -40,12 +41,23 @@ from gitconfig_cli.exceptions import (
     GitOperationError,
     InvalidNameError,
     KeyNotFound,
+    MergeConflictError,
     MergeInProgressError,
+    NoMergeInProgress,
     RevisionNotFound,
 )
 from gitconfig_cli.gitignore import DEFAULT_PATTERNS, managed_patterns
-from gitconfig_cli.logging_config import audit
-from gitconfig_cli.models import CommitInfo, DraftInfo, PublishResult, RepoStatus
+from gitconfig_cli.logging_config import audit, bound_context, get_logger
+from gitconfig_cli.models import (
+    CommitInfo,
+    DraftInfo,
+    MergeResult,
+    PublishPreview,
+    PublishResult,
+    RepoStatus,
+)
+
+log = get_logger("manager")
 
 DRAFT_PREFIX = "draft/"
 GITIGNORE = ".gitignore"
@@ -94,6 +106,7 @@ class ConfigManager:
         self._repo = repo
         self._parser = parser
         self._main = main_branch
+        self._resolver = ConflictResolver(repo, parser)
 
     @property
     def main_branch(self) -> str:
@@ -712,7 +725,7 @@ class ConfigManager:
             log.info("committed" if sha else "unchanged", commit=sha, source=commit)
             return sha
 
-    # -- publishing ------------------------------------------------------
+    # -- merging ---------------------------------------------------------
 
     @staticmethod
     def _git_preference(prefer: Side | None, incoming: Side) -> MergePreference | None:
@@ -735,6 +748,94 @@ class ConfigManager:
                 continue  # the merge deleted it
             self._parser.loads(name, text)
 
+    def _merge(
+        self,
+        source: str,
+        message: str,
+        *,
+        prefer: MergePreference | None,
+        squash: bool = False,
+        keep_conflicts: bool = False,
+    ) -> MergeResult:
+        """Merge ``source`` into the checked-out branch, resolving what it can.
+
+        Git's textual conflicts in configuration files are re-merged key by
+        key; if no key really conflicts the merge is completed automatically.
+        Otherwise the merge is aborted (or, with ``keep_conflicts``, the
+        resolvable files are written and the rest left for the user).
+
+        ``prefer`` is applied by the key-level resolver, not passed to Git as
+        ``-X ours/theirs``: Git applies it per *hunk*, which would silently
+        drop the other side's change to a neighbouring key.
+
+        Raises:
+            MergeConflictError: With key-level details of what conflicts.
+            ConfigFormatError: If the merged result is not valid JSON/YAML;
+                the branch is reset to its previous commit.
+        """
+        target = self._repo.current_branch()
+        before = self._repo.resolve_commit(target)
+        try:
+            try:
+                result = self._repo.merge(
+                    source, message, squash=squash, abort_on_conflict=False
+                )
+            except MergeConflictError as exc:
+                result = self._resolve_textual_conflicts(
+                    exc, message, prefer, before, keep_conflicts
+                )
+            self._validate_merged(result.files, target)
+        except ConfigFormatError as exc:
+            self._repo.reset_hard(before)
+            raise ConfigFormatError(
+                exc.name, f"merging would produce invalid content ({exc.reason})"
+            ) from exc
+        return result
+
+    def _resolve_textual_conflicts(
+        self,
+        conflict: MergeConflictError,
+        message: str,
+        prefer: MergePreference | None,
+        before: str,
+        keep_conflicts: bool,
+    ) -> MergeResult:
+        """Handle a merge that Git stopped because of conflicts."""
+        resolution = self._resolver.analyze(
+            conflict.conflicted_files, before, conflict.source, prefer
+        )
+        if resolution.complete:
+            paths = self._resolver.apply(resolution)
+            sha = self._repo.commit(message, paths)
+            auto = sorted(resolution.resolved)
+            log.info("conflicts.auto_resolved", files=auto, commit=sha)
+            return MergeResult(
+                commit=sha,
+                files=self._repo.changed_files(before, sha),
+                auto_resolved=auto,
+            )
+
+        unresolved = [c.path for c in resolution.unresolved]
+        if keep_conflicts:
+            written = self._resolver.apply(resolution)
+            if written:
+                # stage what we resolved so only real conflicts remain
+                self._repo.stage(written)
+        elif self._repo.is_merging():
+            self._repo.abort_merge()
+        else:  # a squash merge has no MERGE_HEAD to abort
+            self._repo.reset_hard(before)
+        log.info("conflicts.unresolved", files=unresolved, kept=keep_conflicts)
+        raise MergeConflictError(
+            conflict.source,
+            conflict.target,
+            unresolved,
+            details=resolution.unresolved,
+            in_progress=keep_conflicts,
+        ) from None
+
+    # -- publishing ------------------------------------------------------
+
     def publish(
         self,
         draft: str,
@@ -746,9 +847,10 @@ class ConfigManager:
     ) -> PublishResult:
         """Merge a draft into main.
 
-        The merged files are parsed before the publish is accepted: if a
-        line-based merge produced invalid JSON/YAML, main is reset to its
-        previous commit and :class:`ConfigFormatError` is raised.
+        Conflicts that only *look* like conflicts to Git (different keys
+        edited on neighbouring lines) are resolved automatically. Merged
+        files are parsed before the publish is accepted: if the merge would
+        produce invalid JSON/YAML, main is reset to its previous commit.
 
         Args:
             draft: Draft to publish.
@@ -763,8 +865,9 @@ class ConfigManager:
 
         Raises:
             DraftNotFound: If the draft does not exist.
-            MergeConflictError: If draft and main changed the same lines and
-                no preference was given. Main is left unchanged.
+            MergeConflictError: If draft and main changed the same keys and
+                no preference was given. Main is left unchanged and the
+                error lists every conflicting key.
             ConfigFormatError: If the merge would produce an invalid file.
         """
         branch = self._require_draft(draft)
@@ -772,21 +875,12 @@ class ConfigManager:
         with audit("draft.publish", draft=draft, prefer=prefer, squash=squash) as log:
             self._ensure_ready()
             with self._repo.checked_out(self._main):
-                before = self._repo.resolve_commit(self._main)
-                result = self._repo.merge(
+                result = self._merge(
                     branch,
                     text,
                     prefer=self._git_preference(prefer, incoming="draft"),
                     squash=squash,
                 )
-                try:
-                    self._validate_merged(result.files, self._main)
-                except ConfigFormatError as exc:
-                    self._repo.reset_hard(before)
-                    raise ConfigFormatError(
-                        exc.name,
-                        f"publishing would produce invalid content ({exc.reason})",
-                    ) from exc
 
             deleted = False
             if not keep_draft and not result.up_to_date:
@@ -799,6 +893,7 @@ class ConfigManager:
                 commit=result.commit,
                 files=result.files,
                 up_to_date=result.up_to_date,
+                auto_resolved=result.auto_resolved,
                 draft_deleted=deleted,
             )
             return PublishResult(
@@ -808,7 +903,162 @@ class ConfigManager:
                 files=[f for f in result.files if self._parser.supports(f)],
                 up_to_date=result.up_to_date,
                 draft_deleted=deleted,
+                auto_resolved=result.auto_resolved,
             )
+
+    def preview_publish(
+        self, draft: str, *, prefer: Side | None = None, squash: bool = False
+    ) -> PublishPreview:
+        """Show what :meth:`publish` would do, without changing anything.
+
+        The publish is performed for real inside a temporary clone, which
+        is deleted afterwards; the working repository is never touched.
+
+        Args:
+            draft: Draft to check.
+            prefer: Same as for :meth:`publish`.
+            squash: Same as for :meth:`publish`.
+
+        Returns:
+            Files that would change and any conflicts or problems.
+        """
+        self._require_draft(draft)
+        with audit("draft.preview", draft=draft, prefer=prefer, squash=squash) as log:
+            self._ensure_no_merge()
+            with self._repo.temporary_clone() as clone, bound_context(dry_run=True):
+                if clone.current_branch() != self._main:
+                    clone.checkout(self._main)
+                trial = ConfigManager(clone, self._parser, self._main)
+                try:
+                    result = trial.publish(
+                        draft, prefer=prefer, squash=squash, keep_draft=True
+                    )
+                except MergeConflictError as exc:
+                    preview = PublishPreview(draft=draft, conflicts=exc.details)
+                except ConfigFormatError as exc:
+                    preview = PublishPreview(draft=draft, problems=[str(exc)])
+                else:
+                    preview = PublishPreview(
+                        draft=draft,
+                        files=result.files,
+                        auto_resolved=result.auto_resolved,
+                        up_to_date=result.up_to_date,
+                    )
+            log.info(
+                "previewed",
+                can_publish=preview.can_publish,
+                files=preview.files,
+                conflicts=[c.path for c in preview.conflicts],
+            )
+            return preview
+
+    # -- conflict resolution workflow -------------------------------------
+
+    def sync_draft(self, draft: str, *, prefer: Side | None = None) -> MergeResult:
+        """Bring the latest main into a draft, so it can be published cleanly.
+
+        Compatible changes are merged (key by key if needed). If real
+        conflicts remain, the draft is left checked out with the merge in
+        progress: edit the conflicted files, then call
+        :meth:`resolve_conflicts` (or :meth:`abort_merge`).
+
+        Args:
+            draft: Draft to update.
+            prefer: Resolve conflicting keys in favour of ``"draft"`` or
+                ``"main"`` instead of stopping.
+
+        Returns:
+            The merge outcome (``up_to_date`` if main had nothing new).
+
+        Raises:
+            MergeConflictError: With ``in_progress=True`` if manual
+                resolution is needed.
+        """
+        branch = self._require_draft(draft)
+        with audit("draft.sync", draft=draft, prefer=prefer) as log:
+            self._ensure_ready()
+            original = self._repo.current_branch()
+            self._repo.checkout(branch)
+            try:
+                result = self._merge(
+                    self._main,
+                    f"Sync draft '{draft}' with {self._main}",
+                    prefer=self._git_preference(prefer, incoming="main"),
+                    keep_conflicts=True,
+                )
+            except MergeConflictError:
+                raise  # stay on the draft so the user can resolve
+            except BaseException:
+                self._repo.checkout(original)
+                raise
+            self._repo.checkout(original)
+            log.info(
+                "synced",
+                commit=result.commit,
+                up_to_date=result.up_to_date,
+                auto_resolved=result.auto_resolved,
+            )
+            return result
+
+    def _require_merge(self) -> str:
+        """Return the current branch, failing if no merge is in progress."""
+        if not self._repo.is_merging():
+            raise NoMergeInProgress()
+        return self._repo.current_branch()
+
+    def resolve_conflicts(self, message: str | None = None) -> str:
+        """Commit a merge after the conflicted files were fixed by hand.
+
+        Every previously conflicted file must be free of conflict markers
+        and, for configuration files, parse correctly.
+
+        Args:
+            message: Commit message (a default is generated).
+
+        Returns:
+            The merge commit hash.
+
+        Raises:
+            NoMergeInProgress: If there is nothing to resolve.
+            ConfigFormatError: If a file still has markers or is invalid.
+        """
+        branch = self._require_merge()
+        with audit("merge.resolve", branch=branch) as log:
+            to_stage: list[str] = []
+            for path in self._repo.conflicted_files():
+                try:
+                    text = self._repo.read_working_file(path)
+                except FileNotFoundError:
+                    self._repo.remove_file(path)
+                    continue
+                if has_conflict_markers(text):
+                    raise ConfigFormatError(
+                        path,
+                        "still contains conflict markers (<<<<<<<, =======, >>>>>>>)",
+                    )
+                if self._parser.supports(path):
+                    self._parser.loads(path, text)
+                to_stage.append(path)
+            sha = self._repo.commit(
+                message or f"Merge {self._main} into {branch} (conflicts resolved)",
+                to_stage,
+            )
+            log.info("committed", commit=sha, files=to_stage)
+            return sha
+
+    def abort_merge(self) -> str:
+        """Abandon a merge in progress and restore the branch.
+
+        Returns:
+            The branch on which the merge was aborted.
+
+        Raises:
+            NoMergeInProgress: If there is nothing to abort.
+        """
+        branch = self._require_merge()
+        with audit("merge.abort", branch=branch):
+            self._repo.abort_merge()
+            return branch
 
     # -- remotes ---------------------------------------------------------
 

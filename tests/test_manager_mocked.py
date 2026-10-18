@@ -91,24 +91,31 @@ def test_dirty_tree_stops_before_any_write(
     vcs.commit.assert_not_called()
 
 
-def test_publish_conflict_from_backend_is_propagated(
+def test_publish_conflict_is_reported_with_key_details(
     manager: ConfigManager, vcs: MagicMock
 ) -> None:
     vcs.merge.side_effect = MergeConflictError("draft/d", "main", ["app.json"])
+    vcs.resolve_commit.return_value = "head"
+    vcs.merge_base.return_value = "base"
+    versions = {"base": '{"a": 1}', "head": '{"a": 2}', "draft/d": '{"a": 3}'}
+    vcs.read_file.side_effect = lambda _path, ref: versions[ref]
 
-    with pytest.raises(MergeConflictError):
+    with pytest.raises(MergeConflictError) as exc_info:
         manager.publish("d")
 
+    [conflict] = exc_info.value.details
+    assert [(k.key, k.base, k.target, k.source) for k in conflict.keys] == [
+        ("a", 1, 2, 3)
+    ]
+    vcs.reset_hard.assert_called_once_with("head")  # squash-safe abort
     vcs.delete_branch.assert_not_called()
 
 
-def test_publish_translates_preference_for_git(
+def test_preference_is_not_delegated_to_git_hunks(
     manager: ConfigManager, vcs: MagicMock
 ) -> None:
     vcs.merge.return_value = MergeResult(commit="abc", files=[])
 
     manager.publish("d", prefer="draft")
-    manager.publish("d", prefer="main")
 
-    preferences = [c.kwargs["prefer"] for c in vcs.merge.call_args_list]
-    assert preferences == ["theirs", "ours"]
+    assert vcs.merge.call_args.kwargs.get("prefer") is None
