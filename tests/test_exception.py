@@ -11,9 +11,12 @@ from gitconfig_cli.exceptions import (
     DraftNotFound,
     GitConfigError,
     GitOperationError,
+    InvalidNameError,
     InvalidRepoError,
     KeyNotFound,
     MergeConflictError,
+    MergeInProgressError,
+    RevisionNotFound,
 )
 
 
@@ -159,3 +162,33 @@ def test_dirty_working_tree_error_without_files() -> None:
     error = DirtyWorkingTreeError(Path("configs"), [])
 
     assert str(error).endswith("uncommitted changes: unknown files")
+
+
+def test_invalid_name_error_message() -> None:
+    error = InvalidNameError("draft", "bad name", "spaces are not allowed")
+
+    assert (error.kind, error.name) == ("draft", "bad name")
+    assert error.reason == "spaces are not allowed"
+    assert str(error) == "Invalid draft name 'bad name': spaces are not allowed"
+
+
+def test_merge_in_progress_error_message() -> None:
+    error = MergeInProgressError("draft/new-port", ["app.json"])
+
+    assert error.branch == "draft/new-port"
+    assert error.conflicted_files == ["app.json"]
+    assert str(error) == (
+        "A merge is in progress on branch 'draft/new-port' "
+        "(conflicted files: app.json)"
+    )
+
+
+def test_merge_in_progress_error_when_all_resolved() -> None:
+    assert "none left" in str(MergeInProgressError("draft/x", []))
+
+
+def test_revision_not_found_message() -> None:
+    error = RevisionNotFound("app.json", "abc1234")
+
+    assert (error.name, error.revision) == ("app.json", "abc1234")
+    assert str(error) == "Revision 'abc1234' of configuration 'app.json' not found"
