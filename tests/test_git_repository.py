@@ -649,3 +649,21 @@ def test_track_remote_branches_without_remote_is_a_no_op(repo: GitRepository) ->
     repo._track_remote_branches()
 
     assert repo.list_branches() == ["main"]
+
+
+def test_copy_identity_skips_missing_values(
+    repo: GitRepository, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    other = GitRepository.init(tmp_path / "other")
+    reader = mocker.MagicMock()
+    reader.get_value.side_effect = lambda _section, key, default: (
+        "Repo Local" if key == "name" else default
+    )
+    mocker.patch.object(other._repo, "config_reader", return_value=reader)
+
+    repo._copy_identity_from(other)
+
+    config = git.Repo(repo.root).config_reader("repository")
+    assert config.get_value("user", "name") == "Repo Local"
+    assert not config.has_option("user", "email")
+    other.close()

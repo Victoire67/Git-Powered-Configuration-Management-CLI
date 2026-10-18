@@ -162,6 +162,14 @@ class VersionControl(ABC):
         """
 
     @abstractmethod
+    def stage(self, paths: Sequence[str]) -> None:
+        """Stage files for the next commit (also marks conflicts resolved).
+
+        Args:
+            paths: Paths relative to :attr:`root`.
+        """
+
+    @abstractmethod
     def commit(self, message: str, paths: Sequence[str] = ()) -> str:
         """Stage ``paths`` (if any) and commit everything staged.
 
@@ -239,6 +247,15 @@ class VersionControl(ABC):
             base: Reference branch (e.g. ``main``).
             head: Compared branch (e.g. a draft).
             paths: Restrict the diff to these files.
+        """
+
+    @abstractmethod
+    def changed_files(self, old: str, new: str) -> list[str]:
+        """List files that differ between two commits.
+
+        Args:
+            old: Earlier commit.
+            new: Later commit.
         """
 
     @abstractmethod

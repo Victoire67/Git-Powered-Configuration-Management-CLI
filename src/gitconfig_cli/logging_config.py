@@ -128,6 +128,20 @@ def bind_context(**fields: Any) -> None:
     structlog.contextvars.bind_contextvars(**fields)
 
 
+@contextmanager
+def bound_context(**fields: Any) -> Iterator[None]:
+    """Attach fields to every log entry emitted inside a ``with`` block.
+
+    Args:
+        **fields: Key/value pairs, e.g. ``dry_run=True``.
+
+    Yields:
+        Nothing; the fields are removed again when the block exits.
+    """
+    with structlog.contextvars.bound_contextvars(**fields):
+        yield
+
+
 def clear_context() -> None:
     """Remove all fields previously attached with :func:`bind_context`."""
     structlog.contextvars.clear_contextvars()
