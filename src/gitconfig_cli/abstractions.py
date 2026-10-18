@@ -215,7 +215,11 @@ class VersionControl(ABC):
 
     @abstractmethod
     def history(
-        self, ref: str, path: str | None = None, limit: int | None = None
+        self,
+        ref: str,
+        path: str | None = None,
+        limit: int | None = None,
+        first_parent: bool = False,
     ) -> list[CommitInfo]:
         """List commits reachable from ``ref``, newest first.
 
@@ -223,6 +227,8 @@ class VersionControl(ABC):
             ref: Branch name or commit hash to start from.
             path: Only include commits that touched this file.
             limit: Maximum number of commits.
+            first_parent: Follow only the first parent of merge commits, so
+                each merged branch appears as its single merge commit.
         """
 
     @abstractmethod
