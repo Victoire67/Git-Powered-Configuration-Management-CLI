@@ -199,6 +199,20 @@ class GitRepository(VersionControl):
             if name != "HEAD" and name not in local:
                 self._run("branch", "--quiet", "--track", name, f"{remote}/{name}")
 
+    def _copy_identity_from(self, other: "GitRepository") -> None:
+        """Give this repository the commit identity effective in ``other``.
+
+        A clone does not inherit repository-local settings, so without this
+        a user whose name/e-mail is configured only in the configuration
+        repository could not commit in a temporary clone.
+        """
+        reader = other._repo.config_reader()
+        with self._repo.config_writer() as writer:
+            for key in ("name", "email"):
+                value = reader.get_value("user", key, default="")
+                if value:
+                    writer.set_value("user", key, str(value))
+
     def _full_path(self, path: str) -> Path:
         """Resolve a repository-relative path, refusing to escape the root."""
         full = (self._root / path).resolve()
@@ -411,6 +425,15 @@ class GitRepository(VersionControl):
         """
         self._run("rm", "--quiet", "--", path)
 
+    def stage(self, paths: Sequence[str]) -> None:
+        """Stage files for the next commit (also marks conflicts resolved).
+
+        Args:
+            paths: Paths relative to :attr:`root`.
+        """
+        if paths:
+            self._run("add", "--", *paths)
+
     def commit(self, message: str, paths: Sequence[str] = ()) -> str:
         """Stage ``paths`` (if any) and commit everything staged.
 
@@ -425,8 +448,7 @@ class GitRepository(VersionControl):
             GitOperationError: If staging or committing fails (for example
                 when nothing changed or no Git identity is configured).
         """
-        if paths:
-            self._run("add", "--", *paths)
+        self.stage(paths)
         self._run("commit", "--quiet", "-m", message)
         sha = self._head_sha()
         _log.debug("commit.created", commit=sha, message=message, paths=list(paths))
@@ -542,6 +564,19 @@ class GitRepository(VersionControl):
         """
         return self._run("diff", f"{base}...{head}", "--", *paths)
 
+    def changed_files(self, old: str, new: str) -> list[str]:
+        """List files that differ between two commits.
+
+        Args:
+            old: Earlier commit.
+            new: Later commit.
+
+        Returns:
+            Sorted repository-relative paths.
+        """
+        output = self._run("diff", "--name-only", old, new)
+        return sorted(line for line in output.splitlines() if line)
+
     def merge_base(self, first: str, second: str) -> str | None:
         """Return the best common ancestor of two refs, if any.
 
@@ -628,8 +663,7 @@ class GitRepository(VersionControl):
     def _merge_result(self, before: str) -> MergeResult:
         """Build a :class:`MergeResult` for the commits created since ``before``."""
         after = self._head_sha()
-        files = self._run("diff", "--name-only", before, after).splitlines()
-        return MergeResult(commit=after, files=sorted(files))
+        return MergeResult(commit=after, files=self.changed_files(before, after))
 
     def is_merging(self) -> bool:
         """Tell whether a merge is in progress (``MERGE_HEAD`` exists).
@@ -715,6 +749,7 @@ class GitRepository(VersionControl):
         clone: GitRepository | None = None
         try:
             clone = GitRepository.clone(str(self._root), workdir / "repo")
+            clone._copy_identity_from(self)
             yield clone
         finally:
             if clone is not None:

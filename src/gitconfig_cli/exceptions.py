@@ -7,6 +7,8 @@ CLI) can catch any tool-specific error with a single ``except`` clause.
 from collections.abc import Sequence
 from pathlib import Path
 
+from gitconfig_cli.models import FileConflict
+
 
 class GitConfigError(Exception):
     """Base class for all gitconfig-cli errors."""
@@ -47,7 +49,12 @@ class MergeConflictError(GitConfigError):
     """Raised when merging a draft branch produces conflicts."""
 
     def __init__(
-        self, source: str, target: str, conflicted_files: Sequence[str]
+        self,
+        source: str,
+        target: str,
+        conflicted_files: Sequence[str],
+        details: Sequence[FileConflict] = (),
+        in_progress: bool = False,
     ) -> None:
         """Initialize the error.
 
@@ -55,10 +62,15 @@ class MergeConflictError(GitConfigError):
             source: Branch being merged (the draft).
             target: Branch being merged into (usually ``main``).
             conflicted_files: Files that contain conflicts.
+            details: Key-level description of each conflict, when known.
+            in_progress: ``True`` if the merge was left in the working tree
+                for manual resolution, ``False`` if it was aborted.
         """
         self.source = source
         self.target = target
         self.conflicted_files = list(conflicted_files)
+        self.details = list(details)
+        self.in_progress = in_progress
         files = ", ".join(self.conflicted_files)
         super().__init__(f"Merge conflict merging '{source}' into '{target}': {files}")
 
@@ -183,6 +195,14 @@ class MergeInProgressError(GitConfigError):
         super().__init__(
             f"A merge is in progress on branch '{branch}' (conflicted files: {files})"
         )
+
+
+class NoMergeInProgress(GitConfigError):
+    """Raised when resolving or aborting a merge but none is in progress."""
+
+    def __init__(self) -> None:
+        """Initialize the error."""
+        super().__init__("There is no merge in progress")
 
 
 class RevisionNotFound(GitConfigError):

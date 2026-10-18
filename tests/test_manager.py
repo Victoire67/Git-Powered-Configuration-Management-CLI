@@ -629,7 +629,7 @@ def test_publish_rejects_invalid_result_and_resets_main(
         config_repo.commit("bad file", ["broken.json"])
     before = config_repo.resolve_commit("main")
 
-    with pytest.raises(ConfigFormatError, match="publishing would produce invalid"):
+    with pytest.raises(ConfigFormatError, match="merging would produce invalid"):
         manager.publish("d")
 
     assert config_repo.resolve_commit("main") == before
