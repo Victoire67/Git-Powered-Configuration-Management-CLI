@@ -4,9 +4,8 @@ Every exception inherits from GitConfigError, so callers (especially the
 CLI) can catch any tool-specific error with a single ``except`` clause.
 """
 
-from pathlib import Path
-
 from collections.abc import Sequence
+from pathlib import Path
 
 
 class GitConfigError(Exception):
