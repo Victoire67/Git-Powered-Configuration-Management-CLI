@@ -381,6 +381,25 @@ class ConfigManager:
         except FileNotFoundError:
             raise ConfigNotFound(name, source) from None
 
+    def draft_text(self, name: str, draft: str) -> str:
+        """Return the content a change on ``draft`` would start from.
+
+        That is the draft's version if the draft exists, otherwise main's
+        (a missing draft is created from main on the first change).
+
+        Args:
+            name: Configuration file.
+            draft: Draft name.
+
+        Returns:
+            The file content.
+
+        Raises:
+            ConfigNotFound: If the file does not exist there.
+        """
+        _, source = self._draft_source(draft)
+        return self.read_text(name, ref=source)
+
     def read_config(
         self, name: str, draft: str | None = None, ref: str | None = None
     ) -> ConfigData:
@@ -463,17 +482,11 @@ class ConfigManager:
 
     def _commit_change(
         self, name: str, branch: str, text: str | None, message: str
-    ) -> str | None:
+    ) -> str:
         """Write (or delete, if ``text`` is None) a file on a branch and commit.
 
-        Returns ``None`` without committing when the content is unchanged.
+        Callers check beforehand that the change is not a no-op.
         """
-        try:
-            current: str | None = self._repo.read_file(name, branch)
-        except FileNotFoundError:
-            current = None
-        if current == text:
-            return None
         with self._repo.checked_out(branch):
             if text is None:
                 self._repo.remove_file(name)
@@ -490,6 +503,16 @@ class ConfigManager:
                 raise DraftNotFound(draft)
             self.create_draft(draft)
         return branch
+
+    def _draft_source(self, draft: str) -> tuple[str, str]:
+        """Return ``(draft branch, ref holding its current content)``.
+
+        A draft that does not exist yet will be created from main, so until
+        then its content is read from main.
+        """
+        self.validate_draft_name(draft)
+        branch = self.draft_branch(draft)
+        return branch, branch if self._repo.branch_exists(branch) else self._main
 
     def create_config(
         self,
@@ -523,7 +546,6 @@ class ConfigManager:
             if name in self._repo.list_files(branch):
                 raise ConfigAlreadyExists(name, branch)
             sha = self._commit_change(name, branch, text, message or f"Create {name}")
-            assert sha is not None  # a new file always changes the tree
             log.info("committed", commit=sha, branch=branch)
             return sha
 
@@ -536,18 +558,23 @@ class ConfigManager:
         change: Any,
         **fields: Any,
     ) -> str | None:
-        """Load a config from a draft, apply ``change`` to it, and commit."""
+        """Load a config from a draft, apply ``change`` to it, and commit.
+
+        A missing draft is created from main, but only once the change is
+        known to be valid and not a no-op, so mistakes leave no empty drafts.
+        """
         self.validate_config_name(name)
         with audit(action, config=name, draft=draft, **fields) as log:
             self._ensure_ready()
-            branch = self._require_draft(draft)
-            data = self.read_config(name, draft=draft)
-            text = self._parser.dumps(name, change(data))
-            sha = self._commit_change(name, branch, text, message)
-            if sha is None:
+            branch, source = self._draft_source(draft)
+            current = self.read_text(name, ref=source)
+            text = self._parser.dumps(name, change(self._parser.loads(name, current)))
+            if text == current:
                 log.info("unchanged")
-            else:
-                log.info("committed", commit=sha, branch=branch)
+                return None
+            self._draft_for_write(draft, create=True)
+            sha = self._commit_change(name, branch, text, message)
+            log.info("committed", commit=sha, branch=branch)
             return sha
 
     def replace_config(
@@ -558,7 +585,7 @@ class ConfigManager:
         Args:
             name: Configuration file.
             data: New content.
-            draft: Draft to commit to.
+            draft: Draft to commit to (created from main if missing).
             message: Commit message (a default is generated).
 
         Returns:
@@ -580,7 +607,7 @@ class ConfigManager:
             name: Configuration file.
             key: Dotted key path; missing parent mappings are created.
             value: New value.
-            draft: Draft to commit to.
+            draft: Draft to commit to (created from main if missing).
             message: Commit message (a default is generated).
 
         Returns:
@@ -615,7 +642,7 @@ class ConfigManager:
         Args:
             name: Configuration file.
             key: Dotted key path.
-            draft: Draft to commit to.
+            draft: Draft to commit to (created from main if missing).
             message: Commit message (a default is generated).
 
         Returns:
@@ -645,7 +672,7 @@ class ConfigManager:
 
         Args:
             name: Configuration file.
-            draft: Draft to commit to.
+            draft: Draft to commit to (created from main if missing).
             message: Commit message (a default is generated).
 
         Returns:
@@ -657,11 +684,11 @@ class ConfigManager:
         self.validate_config_name(name)
         with audit("config.delete", config=name, draft=draft) as log:
             self._ensure_ready()
-            branch = self._require_draft(draft)
-            if name not in self._repo.list_files(branch):
-                raise ConfigNotFound(name, branch)
+            branch, source = self._draft_source(draft)
+            if name not in self._repo.list_files(source):
+                raise ConfigNotFound(name, source)
+            self._draft_for_write(draft, create=True)
             sha = self._commit_change(name, branch, None, message or f"Delete {name}")
-            assert sha is not None  # removing an existing file always changes the tree
             log.info("committed", commit=sha, branch=branch)
             return sha
 
@@ -685,7 +712,8 @@ class ConfigManager:
             steps: Alternatively, how many versions to go back on the
                 branch (``1`` = the version before the current one). Each
                 publish counts as one version.
-            draft: Roll back on this draft instead of directly on main.
+            draft: Roll back on this draft (created from main if missing)
+                instead of directly on main.
             message: Commit message (a default is generated).
 
         Returns:
@@ -698,13 +726,15 @@ class ConfigManager:
         if (to is None) == (steps is None):
             raise ValueError("pass exactly one of 'to' or 'steps'")
         self.validate_config_name(name)
-        branch = self._require_draft(draft) if draft else self._main
+        branch, source = (
+            self._draft_source(draft) if draft else (self._main, self._main)
+        )
         with audit(
             "config.rollback", config=name, branch=branch, to=to, steps=steps
         ) as log:
             self._ensure_ready()
             if steps is not None:
-                versions = self._repo.history(branch, path=name, first_parent=True)
+                versions = self._repo.history(source, path=name, first_parent=True)
                 if steps < 1 or steps >= len(versions):
                     raise RevisionNotFound(name, f"{steps} version(s) back")
                 commit = versions[steps].sha
@@ -719,10 +749,19 @@ class ConfigManager:
             except FileNotFoundError:
                 raise RevisionNotFound(name, commit[:7]) from None
             self._parser.loads(name, text)
+            try:
+                current: str | None = self._repo.read_file(name, source)
+            except FileNotFoundError:
+                current = None
+            if text == current:
+                log.info("unchanged", source=commit)
+                return None
+            if draft:
+                self._draft_for_write(draft, create=True)
             sha = self._commit_change(
                 name, branch, text, message or f"Rollback {name} to {commit[:7]}"
             )
-            log.info("committed" if sha else "unchanged", commit=sha, source=commit)
+            log.info("committed", commit=sha, source=commit)
             return sha
 
     # -- merging ---------------------------------------------------------

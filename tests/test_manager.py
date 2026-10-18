@@ -345,9 +345,46 @@ def test_set_value_on_missing_config(manager: ConfigManager) -> None:
         manager.set_value("app.json", "a", 1, draft="d")
 
 
-def test_set_value_requires_existing_draft(manager: ConfigManager) -> None:
-    with pytest.raises(DraftNotFound):
-        manager.set_value("app.json", "a", 1, draft="ghost")
+def test_set_value_creates_missing_draft_from_main(
+    published: ConfigManager, config_repo: GitRepository
+) -> None:
+    published.set_value("app.json", "port", 99, draft="fresh")
+
+    assert _json(config_repo, "app.json", "draft/fresh") == {"port": 99}
+    assert _json(config_repo, "app.json") == {"port": 3}
+
+
+def test_failed_change_does_not_leave_an_empty_draft(
+    manager: ConfigManager, config_repo: GitRepository
+) -> None:
+    with pytest.raises(ConfigNotFound):
+        manager.set_value("app.json", "a", 1, draft="typo")
+
+    assert not config_repo.branch_exists("draft/typo")
+
+
+def test_no_op_change_does_not_create_a_draft(
+    published: ConfigManager, config_repo: GitRepository
+) -> None:
+    assert published.set_value("app.json", "port", 3, draft="noop") is None
+
+    assert not config_repo.branch_exists("draft/noop")
+
+
+def test_delete_config_creates_missing_draft(
+    published: ConfigManager, config_repo: GitRepository
+) -> None:
+    published.delete_config("app.json", draft="cleanup")
+
+    assert "app.json" not in config_repo.list_files("draft/cleanup")
+
+
+def test_rollback_on_new_draft(
+    published: ConfigManager, config_repo: GitRepository
+) -> None:
+    published.rollback("app.json", steps=1, draft="undo")
+
+    assert _json(config_repo, "app.json", "draft/undo") == {"port": 2}
 
 
 def test_unset_value(manager: ConfigManager, config_repo: GitRepository) -> None:
@@ -474,6 +511,18 @@ def test_rollback_on_draft_leaves_main_untouched(
     published.rollback("app.json", steps=2, draft="revert")
 
     assert _json(config_repo, "app.json", "draft/revert") == {"port": 1}
+    assert _json(config_repo, "app.json") == {"port": 3}
+
+
+def test_rollback_restores_a_deleted_config(
+    published: ConfigManager, config_repo: GitRepository
+) -> None:
+    before_delete = config_repo.resolve_commit("main")
+    published.delete_config("app.json", draft="remove")
+    published.publish("remove")
+
+    published.rollback("app.json", to=before_delete)
+
     assert _json(config_repo, "app.json") == {"port": 3}
 
 
