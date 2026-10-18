@@ -3,10 +3,16 @@ from pathlib import Path
 import pytest
 
 from gitconfig_cli.exceptions import (
+    ConfigAlreadyExists,
+    ConfigFormatError,
     ConfigNotFound,
+    DirtyWorkingTreeError,
+    DraftAlreadyExists,
+    DraftNotFound,
     GitConfigError,
     GitOperationError,
     InvalidRepoError,
+    KeyNotFound,
     MergeConflictError,
 )
 
@@ -90,3 +96,66 @@ def test_git_operation_error_keeps_the_original_cause() -> None:
         raise GitOperationError("push", str(original)) from original
 
     assert exc_info.value.__cause__ is original
+
+
+@pytest.mark.parametrize(
+    "error_class",
+    [
+        ConfigAlreadyExists,
+        ConfigFormatError,
+        KeyNotFound,
+        DraftNotFound,
+        DraftAlreadyExists,
+        DirtyWorkingTreeError,
+    ],
+)
+def test_workflow_errors_inherit_from_base(error_class: type[Exception]) -> None:
+    assert issubclass(error_class, GitConfigError)
+
+
+def test_config_already_exists_message() -> None:
+    error = ConfigAlreadyExists("app.json", "draft/new-port")
+
+    assert error.name == "app.json"
+    assert error.branch == "draft/new-port"
+    assert str(error) == (
+        "Configuration 'app.json' already exists on branch 'draft/new-port'"
+    )
+
+
+def test_config_format_error_message() -> None:
+    error = ConfigFormatError("app.json", "expecting value")
+
+    assert error.name == "app.json"
+    assert error.reason == "expecting value"
+    assert str(error) == "Invalid configuration 'app.json': expecting value"
+
+
+def test_key_not_found_message() -> None:
+    error = KeyNotFound("app.json", "db.port")
+
+    assert error.name == "app.json"
+    assert error.key == "db.port"
+    assert str(error) == "Key 'db.port' not found in configuration 'app.json'"
+
+
+def test_draft_errors_messages() -> None:
+    assert DraftNotFound("new-port").draft == "new-port"
+    assert str(DraftNotFound("new-port")) == "Draft 'new-port' does not exist"
+    assert DraftAlreadyExists("new-port").draft == "new-port"
+    assert str(DraftAlreadyExists("new-port")) == "Draft 'new-port' already exists"
+
+
+def test_dirty_working_tree_error_lists_files() -> None:
+    error = DirtyWorkingTreeError(Path("configs"), ["app.json", "notes.txt"])
+
+    assert error.files == ["app.json", "notes.txt"]
+    assert str(error) == (
+        "Repository at 'configs' has uncommitted changes: app.json, notes.txt"
+    )
+
+
+def test_dirty_working_tree_error_without_files() -> None:
+    error = DirtyWorkingTreeError(Path("configs"), [])
+
+    assert str(error).endswith("uncommitted changes: unknown files")
