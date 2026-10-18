@@ -1,7 +1,7 @@
 [project]
 name = "gitconfig-cli"
 version = "0.1.0"
-description = ""
+description = "Git-powered configuration management CLI: draft, publish and roll back JSON/YAML configs"
 authors = [
     {name = "victoire67",email = "ansimavicky@gmail.com"}
 ]
@@ -13,6 +13,10 @@ dependencies = [
     "structlog (>=26.1.0,<27.0.0)"
 ]
 
+readme = "README.md"
+
+[project.scripts]
+gitconfig-cli = "gitconfig_cli.cli:main"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
@@ -65,3 +69,10 @@ addopts = "--cov=gitconfig_cli --cov-report=term-missing --cov-report=html"
 [tool.coverage.run]
 branch = true
 source = ["gitconfig_cli"]
+
+[tool.coverage.report]
+fail_under = 95
+show_missing = true
+exclude_also = [
+    'if __name__ == "__main__":',
+]
