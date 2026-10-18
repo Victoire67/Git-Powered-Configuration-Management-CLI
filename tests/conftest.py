@@ -12,8 +12,10 @@ from pathlib import Path
 import git
 import pytest
 
+from gitconfig_cli.config_parser import ConfigParser
 from gitconfig_cli.git_repository import GitRepository
 from gitconfig_cli.logging_config import clear_context, configure_logging
+from gitconfig_cli.manager import ConfigManager
 
 TEST_NAME = "Test User"
 TEST_EMAIL = "test@example.com"
@@ -87,3 +89,18 @@ def commit_file(repo: GitRepository) -> CommitFile:
             return repo.commit(message or f"Update {path}", [path])
 
     return _commit_file
+
+
+@pytest.fixture
+def config_repo(tmp_path: Path) -> Iterator[GitRepository]:
+    """An initialized configuration repository (README + managed .gitignore)."""
+    repository = GitRepository.init(tmp_path / "config-repo")
+    ConfigManager(repository, ConfigParser()).initialize()
+    yield repository
+    repository.close()
+
+
+@pytest.fixture
+def manager(config_repo: GitRepository) -> ConfigManager:
+    """A ConfigManager wired to a real, initialized temporary repository."""
+    return ConfigManager(config_repo, ConfigParser())
