@@ -1,0 +1,9 @@
+# Runtime dependencies of gitconfig-cli (versions match poetry.lock).
+# Install with:  pip install -r requirements.txt
+GitPython==3.2.1
+gitdb==4.0.12
+smmap==5.0.3
+click==8.5.0
+colorama==0.4.6 ; sys_platform == "win32"
+PyYAML==6.0.3
+structlog==26.1.0
