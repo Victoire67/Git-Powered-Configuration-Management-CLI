@@ -489,7 +489,11 @@ class GitRepository(VersionControl):
         return sha
 
     def history(
-        self, ref: str, path: str | None = None, limit: int | None = None
+        self,
+        ref: str,
+        path: str | None = None,
+        limit: int | None = None,
+        first_parent: bool = False,
     ) -> list[CommitInfo]:
         """List commits reachable from ``ref``, newest first.
 
@@ -497,6 +501,8 @@ class GitRepository(VersionControl):
             ref: Branch name or commit hash to start from.
             path: Only include commits that touched this file.
             limit: Maximum number of commits.
+            first_parent: Follow only the first parent of merge commits, so
+                each merged branch appears as its single merge commit.
 
         Returns:
             Commit summaries, newest first.
@@ -510,6 +516,8 @@ class GitRepository(VersionControl):
             kwargs["paths"] = path
         if limit is not None:
             kwargs["max_count"] = limit
+        if first_parent:
+            kwargs["first_parent"] = True
         return [
             CommitInfo(
                 sha=c.hexsha,

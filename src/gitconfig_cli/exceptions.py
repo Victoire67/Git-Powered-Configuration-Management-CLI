@@ -150,6 +150,56 @@ class DirtyWorkingTreeError(GitConfigError):
         super().__init__(f"Repository at '{path}' has uncommitted changes: {listed}")
 
 
+class InvalidNameError(GitConfigError):
+    """Raised when a draft or configuration name is not acceptable."""
+
+    def __init__(self, kind: str, name: str, reason: str) -> None:
+        """Initialize the error.
+
+        Args:
+            kind: What was being named, e.g. ``"draft"`` or ``"configuration"``.
+            name: The rejected name.
+            reason: Why it was rejected.
+        """
+        self.kind = kind
+        self.name = name
+        self.reason = reason
+        super().__init__(f"Invalid {kind} name '{name}': {reason}")
+
+
+class MergeInProgressError(GitConfigError):
+    """Raised when an action needs a clean state but a merge awaits resolution."""
+
+    def __init__(self, branch: str, conflicted_files: Sequence[str]) -> None:
+        """Initialize the error.
+
+        Args:
+            branch: Branch on which the merge is in progress.
+            conflicted_files: Files that still contain conflicts.
+        """
+        self.branch = branch
+        self.conflicted_files = list(conflicted_files)
+        files = ", ".join(self.conflicted_files) or "none left"
+        super().__init__(
+            f"A merge is in progress on branch '{branch}' (conflicted files: {files})"
+        )
+
+
+class RevisionNotFound(GitConfigError):
+    """Raised when a requested version of a configuration does not exist."""
+
+    def __init__(self, name: str, revision: str) -> None:
+        """Initialize the error.
+
+        Args:
+            name: Name of the configuration file.
+            revision: The commit, branch or relative version that was asked for.
+        """
+        self.name = name
+        self.revision = revision
+        super().__init__(f"Revision '{revision}' of configuration '{name}' not found")
+
+
 class GitOperationError(GitConfigError):
     """Raised when an underlying Git command fails unexpectedly."""
 
